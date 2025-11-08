@@ -1,10 +1,10 @@
-# instacart_spark_pipeline.py
+# instacart_spark_pipeline_dil.py
 
-from pyspark.sql import SparkSession, functions as F, Window
+from pyspark.sql import SparkSession, functions as F
 from pyspark.sql.types import IntegerType, ArrayType, StructType, StructField, FloatType
 import math
 
-SPARK_APP_NAME = "InstacartPreprocessing"
+SPARK_APP_NAME = "InstacartDILPreprocessing"
 
 # ---------- SPARK SESSION ----------
 def start_spark():
@@ -60,16 +60,13 @@ def cooccurrence_by_window(spark, order_products_df, order_windows_df):
 
 # ---------- COMPUTE SCORES ----------
 def compute_weights_and_filter(spark, cooc_df, items_df, totals_df, norm_threshold=0.002, use_npmi=True):
-    # Rename columns to avoid ambiguity
     items_i = items_df.selectExpr("window_id as w1", "product_id as i_item", "item_count as count_i")
     items_j = items_df.selectExpr("window_id as w2", "product_id as j_item", "item_count as count_j")
 
-    # Join co-occurrences with item counts
     c = cooc_df.join(items_i, on=[(cooc_df.window_id == F.col("w1")) & (cooc_df.i == F.col("i_item"))]).drop("w1")
     c = c.join(items_j, on=[(c.window_id == F.col("w2")) & (c.j == F.col("j_item"))]).drop("w2")
     c = c.join(totals_df, on="window_id")
 
-    # UDFs for scores
     def norm_score(count_ij, count_i, count_j):
         return float(count_ij) / math.sqrt(max(count_i * count_j, 1))
 
@@ -86,7 +83,6 @@ def compute_weights_and_filter(spark, cooc_df, items_df, totals_df, norm_thresho
     norm_udf = F.udf(norm_score, FloatType())
     npmi_udf = F.udf(npmi_func, FloatType())
 
-    # Compute scores
     c = c.withColumn("norm_score", norm_udf("cooc_count","count_i","count_j"))
     if use_npmi:
         c = c.withColumn("npmi", npmi_udf("cooc_count","count_i","count_j","total_orders"))
@@ -96,13 +92,39 @@ def compute_weights_and_filter(spark, cooc_df, items_df, totals_df, norm_thresho
 
     return filtered.select("window_id","i","j","cooc_count","count_i","count_j","norm_score","npmi")
 
+# ---------- PARTITION GRAPH ----------
+def partition_graph(filtered_df, num_partitions=4):
+    assign_partition = F.udf(lambda x: hash(x) % num_partitions, IntegerType())
+    df = filtered_df.withColumn("i_partition", assign_partition("i")) \
+                    .withColumn("j_partition", assign_partition("j"))
+    df = df.withColumn("edge_partition", F.least("i_partition","j_partition"))
+
+    # Identify boundary nodes (nodes connecting multiple partitions)
+    boundary_nodes = df.filter(F.col("i_partition") != F.col("j_partition")) \
+                       .select(F.col("i").alias("node"), F.col("i_partition").alias("partition")) \
+                       .union(df.filter(F.col("i_partition") != F.col("j_partition"))
+                              .select(F.col("j").alias("node"), F.col("j_partition").alias("partition"))) \
+                       .distinct()
+
+    partitioned_dfs = {}
+    for p in range(num_partitions):
+        partitioned_dfs[p] = df.filter(F.col("edge_partition") == p)
+
+    return partitioned_dfs, boundary_nodes
+
 # ---------- EXPORT ----------
-def export_edges(filtered_df, out_path_prefix="edges_output"):
-    # Save as Parquet
-    filtered_df.write.mode("overwrite").parquet(out_path_prefix)
-    # Save as CSV directly from Spark
-    filtered_df.write.mode("overwrite").option("header", True).csv(f"{out_path_prefix}_csv")
-    print(f"Edges exported to Parquet folder '{out_path_prefix}/' and CSV folder '{out_path_prefix}_csv/'")
+def export_partitioned_edges(partitioned_dfs, boundary_nodes, out_prefix="partitioned_edges"):
+    for pid, df in partitioned_dfs.items():
+        path_parquet = f"{out_prefix}/partition_{pid}"
+        path_csv = f"{out_prefix}_csv/partition_{pid}"
+        df.write.mode("overwrite").parquet(path_parquet)
+        df.write.mode("overwrite").option("header", True).csv(path_csv)
+        print(f"Partition {pid} exported to Parquet: {path_parquet} and CSV: {path_csv}")
+
+    # Export boundary nodes for synchronization
+    boundary_nodes.write.mode("overwrite").parquet(f"{out_prefix}/boundary_nodes")
+    boundary_nodes.write.mode("overwrite").option("header", True).csv(f"{out_prefix}_csv/boundary_nodes")
+    print("Boundary nodes exported for synchronization.")
 
 # ---------- MAIN ----------
 if __name__ == "__main__":
@@ -113,7 +135,7 @@ if __name__ == "__main__":
     order_products_path = "order_products.csv"
     products_path = "products.csv"
 
-    # Load data
+    # Load tables
     orders, order_products, products = load_tables(spark, orders_path, order_products_path, products_path)
     print("Loaded tables:")
     orders.show(5)
@@ -139,5 +161,9 @@ if __name__ == "__main__":
     print("Filtered edges (first 5 rows):")
     filtered.show(5)
 
-    # Export edges
-    export_edges(filtered, "edges_output")
+    # Partition the graph
+    num_partitions = 4
+    partitioned_graphs, boundary_nodes = partition_graph(filtered, num_partitions=num_partitions)
+
+    # Export partitioned edges and boundary nodes
+    export_partitioned_edges(partitioned_graphs, boundary_nodes, "partitioned_edges")
