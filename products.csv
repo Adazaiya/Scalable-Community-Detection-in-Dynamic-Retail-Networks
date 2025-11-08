@@ -1,0 +1,16 @@
+product_id,product_name,aisle,department
+101,Organic Whole Milk,dairy,dairy eggs
+102,Banana,fresh fruits,produce
+103,Cheerios,cereal,breakfast
+104,Large Eggs,dairy,dairy eggs
+105,Bread,bakery,bakery
+106,Almond Milk,dairy,dairy eggs
+107,Orange Juice,beverages,beverages
+108,Yogurt,dairy,dairy eggs
+109,Granola,cereal,breakfast
+110,Butter,dairy,dairy eggs
+111,Coffee,beverages,beverages
+112,Apple,fresh fruits,produce
+113,Spinach,fresh vegetables,produce
+114,Cheddar Cheese,dairy,dairy eggs
+115,Cereal Bar,cereal,breakfast
