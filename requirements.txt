@@ -1,2 +1,3 @@
 # PySpark for Spark DataFrames and UDFs
 pyspark==3.5.1
+networkx==3.2.1
