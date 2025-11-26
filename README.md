@@ -12,7 +12,7 @@ echo $JAVA_HOME
 Create a virtual environment and install the required packages:
 
 ```bash
-python3 -m venv venv
+python3.11 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
@@ -31,7 +31,7 @@ export PATH=$SPARK_HOME/bin:$PATH
 Run the main Spark pipeline script and extensions:
 
 ```bash
-python3.11 instacart_spark_pipeline.py
+python3 instacart_spark_pipeline.py
 ```
 ```bash
 python3 louvain_baseline.py
