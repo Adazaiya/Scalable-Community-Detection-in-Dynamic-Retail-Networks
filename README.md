@@ -34,6 +34,9 @@ Run the main Spark pipeline script and extensions:
 python3 instacart_spark_pipeline.py
 ```
 ```bash
+python3 louvain_baseline.py
+```
+```bash
 python3 dil_extension1.py
 ```
 ```bash
