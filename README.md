@@ -28,9 +28,19 @@ export PATH=$SPARK_HOME/bin:$PATH
 ```
 ## 4. Run the pipeline
 
-Run the main Spark pipeline script:
+Run the main Spark pipeline script and extensions:
 
 ```bash
 python3 instacart_spark_pipeline.py
 ```
+```bash
+python3 dil_extension1.py
+```
+```bash
+python3 dil_extension2.py
+```
+```bash
+python3 dil_extension3.py
+```
+
 
