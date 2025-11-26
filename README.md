@@ -31,7 +31,7 @@ export PATH=$SPARK_HOME/bin:$PATH
 Run the main Spark pipeline script and extensions:
 
 ```bash
-python3 instacart_spark_pipeline.py
+python3.11 instacart_spark_pipeline.py
 ```
 ```bash
 python3 louvain_baseline.py
