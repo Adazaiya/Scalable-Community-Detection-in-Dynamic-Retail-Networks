@@ -1,0 +1,2 @@
+# PySpark for Spark DataFrames and UDFs
+pyspark==3.5.1
