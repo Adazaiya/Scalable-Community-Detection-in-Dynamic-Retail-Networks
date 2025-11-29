@@ -1,4 +1,4 @@
-# instacart_spark_pipeline_dil.py
+# instacart_spark_pipeline.py
 
 from pyspark.sql import SparkSession, functions as F
 from pyspark.sql.types import IntegerType, ArrayType, StructType, StructField, FloatType
@@ -6,7 +6,7 @@ import math
 
 SPARK_APP_NAME = "InstacartDILPreprocessing"
 
-# ---------- SPARK SESSION ----------
+# SPARK SESSION
 def start_spark():
     spark = SparkSession.builder \
         .appName(SPARK_APP_NAME) \
@@ -15,7 +15,7 @@ def start_spark():
         .getOrCreate()
     return spark
 
-# ---------- LOAD CSV TABLES ----------
+# LOAD CSV TABLES
 def load_tables(spark, orders_path, order_products_path, products_path):
     orders = spark.read.option("header", True).csv(orders_path, inferSchema=True)
     order_products = spark.read.option("header", True).csv(order_products_path, inferSchema=True)
@@ -23,19 +23,19 @@ def load_tables(spark, orders_path, order_products_path, products_path):
     orders = orders.withColumn("order_date", F.to_date("order_date"))
     return orders, order_products, products
 
-# ---------- CREATE WINDOWS ----------
+# CREATE WINDOWS
 def get_windows(orders_df, freq_days=7):
     min_date = orders_df.agg(F.min("order_date")).collect()[0][0]
     windowed = orders_df.withColumn("days_since", F.datediff(F.col("order_date"), F.lit(min_date)))
     windowed = windowed.withColumn("window_id", (F.col("days_since") / F.lit(freq_days)).cast("int"))
     return windowed.select("order_id", "window_id")
 
-# ---------- CO-OCCURRENCE ----------
+# CO-OCCURRENCE
 def cooccurrence_by_window(spark, order_products_df, order_windows_df):
     joined = order_products_df.join(order_windows_df, on="order_id", how="inner")
     orders_products = joined.groupBy("window_id","order_id").agg(F.collect_list("product_id").alias("products"))
 
-    # UDF to create all pairs
+
     def pairs_udf(products):
         unique = sorted(set(int(p) for p in products))
         res = []
@@ -58,7 +58,7 @@ def cooccurrence_by_window(spark, order_products_df, order_windows_df):
     total_orders = order_windows_df.groupBy("window_id").agg(F.countDistinct("order_id").alias("total_orders"))
     return cooc, items, total_orders
 
-# ---------- COMPUTE SCORES ----------
+# COMPUTE SCORES
 def compute_weights_and_filter(spark, cooc_df, items_df, totals_df, norm_threshold=0.002, use_npmi=True):
     items_i = items_df.selectExpr("window_id as w1", "product_id as i_item", "item_count as count_i")
     items_j = items_df.selectExpr("window_id as w2", "product_id as j_item", "item_count as count_j")
@@ -92,27 +92,53 @@ def compute_weights_and_filter(spark, cooc_df, items_df, totals_df, norm_thresho
 
     return filtered.select("window_id","i","j","cooc_count","count_i","count_j","norm_score","npmi")
 
-# ---------- PARTITION GRAPH ----------
+# PARTITION GRAPH
 def partition_graph(filtered_df, num_partitions=4):
     assign_partition = F.udf(lambda x: hash(x) % num_partitions, IntegerType())
     df = filtered_df.withColumn("i_partition", assign_partition("i")) \
                     .withColumn("j_partition", assign_partition("j"))
+
     df = df.withColumn("edge_partition", F.least("i_partition","j_partition"))
 
-    # Identify boundary nodes (nodes connecting multiple partitions)
-    boundary_nodes = df.filter(F.col("i_partition") != F.col("j_partition")) \
-                       .select(F.col("i").alias("node"), F.col("i_partition").alias("partition")) \
-                       .union(df.filter(F.col("i_partition") != F.col("j_partition"))
-                              .select(F.col("j").alias("node"), F.col("j_partition").alias("partition"))) \
-                       .distinct()
+    # Cross-partition edges
+    cross_edges = df.filter(F.col("i_partition") != F.col("j_partition"))
 
+    # Identify boundary nodes
+    # if it has cross-partition edges, record both its home partition and connected partitions
+    boundary_i = cross_edges.select(
+        F.col("i").alias("node"),
+        F.col("i_partition").alias("partition")
+    )
+    boundary_j_from_cross = cross_edges.select(
+        F.col("j").alias("node"),
+        F.col("j_partition").alias("partition")
+    )
+
+    # track when a node appears in different partition contexts
+    boundary_i_alt = cross_edges.select(
+        F.col("i").alias("node"),
+        F.col("j_partition").alias("partition")
+    )
+    boundary_j_alt = cross_edges.select(
+        F.col("j").alias("node"),
+        F.col("i_partition").alias("partition")
+    )
+
+    # Union all boundary node appearances and keep distinct
+    boundary_nodes = boundary_i \
+        .union(boundary_j_from_cross) \
+        .union(boundary_i_alt) \
+        .union(boundary_j_alt) \
+        .distinct()
+
+    # Partitioned edges
     partitioned_dfs = {}
     for p in range(num_partitions):
         partitioned_dfs[p] = df.filter(F.col("edge_partition") == p)
 
     return partitioned_dfs, boundary_nodes
 
-# ---------- EXPORT ----------
+#  EXPORT
 def export_partitioned_edges(partitioned_dfs, boundary_nodes, out_prefix="partitioned_edges"):
     for pid, df in partitioned_dfs.items():
         path_parquet = f"{out_prefix}/partition_{pid}"
@@ -126,7 +152,7 @@ def export_partitioned_edges(partitioned_dfs, boundary_nodes, out_prefix="partit
     boundary_nodes.write.mode("overwrite").option("header", True).csv(f"{out_prefix}_csv/boundary_nodes")
     print("Boundary nodes exported for synchronization.")
 
-# ---------- MAIN ----------
+
 if __name__ == "__main__":
     spark = start_spark()
 
